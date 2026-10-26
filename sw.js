@@ -1,4 +1,4 @@
-const CACHE = "scan-pdf-v1";
+const CACHE = "scan-pdf-v4";
 const CORE = ["./", "./index.html", "./manifest.json", "./icon.svg"];
 
 self.addEventListener("install", e => {
@@ -29,7 +29,7 @@ self.addEventListener("fetch", e => {
         .catch(() => caches.match(req).then(hit => hit || caches.match("./index.html")))
     );
   } else {
-    // ไลบรารี/ไฟล์ภาษาจาก CDN: ใช้ที่เก็บไว้ก่อน ไม่มีค่อยโหลดแล้วเก็บ
+    // ไลบรารี/ฟอนต์/ไฟล์ภาษาจาก CDN: ใช้ที่เก็บไว้ก่อน ไม่มีค่อยโหลดแล้วเก็บ
     e.respondWith(
       caches.match(req).then(hit =>
         hit || fetch(req).then(res => {
