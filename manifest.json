@@ -1,5 +1,5 @@
 {
-  "name": "สแกนเอกสาร → PDF",
+  "name": "สแกนเอกสาร → PDF / Excel",
   "short_name": "สแกน PDF",
   "start_url": "./index.html",
   "scope": "./",
