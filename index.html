@@ -411,10 +411,13 @@ async function makeMergedPdf() {
 
 /* ---------- ส่งออก Excel ---------- */
 async function makeExcel() {
-  const ready = pages.filter(isReady);
-  if (!ready.length) return setStatus("ยังไม่มีหน้าที่อ่านเสร็จ");
+  if (!pages.length) return setStatus("ยังไม่มีรูปภาพในระบบ");
   if (typeof XLSX === "undefined") return setStatus("ยังไม่มีไลบรารี Excel (ต้องต่อเน็ตเปิดแอปก่อน 1 ครั้ง)");
   try {
+    // ดึงหน้าที่มีข้อความทั้งหมด (ไม่จำกัดว่าต้องมีคำว่า เสร็จ ใน state)
+    const ready = pages.filter(p => p.text && p.text.trim().length > 0);
+    if (!ready.length) return setStatus("ยังไม่มีข้อความในระบบ กรุณารอให้อ่านข้อความเสร็จก่อน");
+    
     const rows1 = [["หน้า", "ข้อความ"]];
     const rows2 = [["หน้า", "บรรทัด", "ข้อความ"]];
     ready.forEach((p, i) => {
@@ -437,7 +440,6 @@ async function makeExcel() {
     setStatus("ส่งออก Excel ไม่สำเร็จ: " + e.message);
   }
 }
-
 /* ---------- ปุ่มต่าง ๆ ---------- */
 $("cam").addEventListener("change", e => { addFiles([...e.target.files]); e.target.value = ""; });
 $("gal").addEventListener("change", e => { addFiles([...e.target.files]); e.target.value = ""; });
