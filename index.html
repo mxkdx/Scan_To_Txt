@@ -409,22 +409,25 @@ async function makeMergedPdf() {
   } finally { render(); }
 }
 
-/* ---------- ส่งออก Excel ---------- */
+/* ---------- ส่งออก Excel (ดึงจากช่องข้อความหน้าจอ) ---------- */
 async function makeExcel() {
-  if (!pages.length) return setStatus("ยังไม่มีรูปภาพในระบบ");
+  const fullText = $("out").value.trim();
+  if (!fullText) return setStatus("ยังไม่มีข้อความในระบบ กรุณารอให้อ่านหรือใส่ข้อความก่อน");
   if (typeof XLSX === "undefined") return setStatus("ยังไม่มีไลบรารี Excel (ต้องต่อเน็ตเปิดแอปก่อน 1 ครั้ง)");
   try {
-    // ดึงหน้าที่มีข้อความทั้งหมด (ไม่จำกัดว่าต้องมีคำว่า เสร็จ ใน state)
-    const ready = pages.filter(p => p.text && p.text.trim().length > 0);
-    if (!ready.length) return setStatus("ยังไม่มีข้อความในระบบ กรุณารอให้อ่านข้อความเสร็จก่อน");
-    
+    // แยกตามหน้าที่คั่นด้วย --- หน้า ... --- หรือแยกย่อหน้า
+    const pageBlocks = fullText.split(/--- หน้า \d+ ---/).map(s => s.trim()).filter(Boolean);
+    const targetPages = pageBlocks.length > 0 ? pageBlocks : [fullText];
+
     const rows1 = [["หน้า", "ข้อความ"]];
     const rows2 = [["หน้า", "บรรทัด", "ข้อความ"]];
-    ready.forEach((p, i) => {
-      rows1.push([i + 1, p.text]);
-      p.text.split("\n").map(s => s.trim()).filter(Boolean)
+
+    targetPages.forEach((text, i) => {
+      rows1.push([i + 1, text]);
+      text.split("\n").map(s => s.trim()).filter(Boolean)
         .forEach((line, j) => rows2.push([i + 1, j + 1, line]));
     });
+
     const ws1 = XLSX.utils.aoa_to_sheet(rows1);
     ws1["!cols"] = [{ wch: 6 }, { wch: 90 }];
     const ws2 = XLSX.utils.aoa_to_sheet(rows2);
@@ -440,6 +443,7 @@ async function makeExcel() {
     setStatus("ส่งออก Excel ไม่สำเร็จ: " + e.message);
   }
 }
+  
 /* ---------- ปุ่มต่าง ๆ ---------- */
 $("cam").addEventListener("change", e => { addFiles([...e.target.files]); e.target.value = ""; });
 $("gal").addEventListener("change", e => { addFiles([...e.target.files]); e.target.value = ""; });
