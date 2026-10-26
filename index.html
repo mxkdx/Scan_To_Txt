@@ -5,9 +5,11 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="theme-color" content="#1a73e8">
 <link rel="manifest" href="manifest.json">
-<title>สแกนหลายหน้า → PDF</title>
+<title>สแกนหลายหน้า → PDF / Excel</title>
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js" crossorigin="anonymous"></script>
 <script src="https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@pdf-lib/fontkit@1.1.1/dist/fontkit.umd.min.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js" crossorigin="anonymous"></script>
 <style>
   body { font-family: sans-serif; margin: 0; padding: 16px; background: #f4f6f8; color: #222; }
   h1 { font-size: 1.3rem; margin: 0 0 6px; }
@@ -19,13 +21,21 @@
   .btn.green { background: #188038; }
   .btn.disabled, .btn:disabled { opacity: .5; pointer-events: none; }
   input[type=file] { display: none; }
+  details { background: #fff; border-radius: 10px; padding: 10px 12px; margin-bottom: 12px; }
+  summary { font-weight: bold; }
+  details label { display: block; margin-top: 10px; font-size: .9rem; }
+  details input[type=password], details input[type=text], details select {
+    width: 100%; box-sizing: border-box; padding: 10px; font-size: 1rem;
+    border: 1px solid #ccc; border-radius: 8px; margin-top: 4px; }
   #pages { display: grid; grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
            gap: 8px; margin: 10px 0; }
   .page { position: relative; background: #fff; border-radius: 8px; padding: 4px;
-          box-shadow: 0 1px 3px rgba(0,0,0,.2); text-align: center; font-size: .8rem; }
+          box-shadow: 0 1px 3px rgba(0,0,0,.2); text-align: center; font-size: .75rem; }
   .page img { width: 100%; height: 110px; object-fit: cover; border-radius: 6px; }
-  .page .del { position: absolute; top: 2px; right: 2px; width: 26px; height: 26px;
-               border: 0; border-radius: 50%; background: #d93025; color: #fff; font-size: 1rem; }
+  .page .del, .page .rot { position: absolute; top: 2px; width: 28px; height: 28px;
+               border: 0; border-radius: 50%; color: #fff; font-size: 1rem; }
+  .page .del { right: 2px; background: #d93025; }
+  .page .rot { left: 2px; background: #1a73e8; }
   .page .st { padding: 2px 0; color: #555; }
   progress { width: 100%; height: 14px; }
   #status { margin: 8px 0; font-size: .9rem; color: #555; }
@@ -39,8 +49,26 @@
 </style>
 </head>
 <body>
-  <h1>สแกนเอกสาร → PDF ไฟล์เดียว</h1>
+  <h1>สแกนเอกสาร → PDF / Excel</h1>
   <div id="net"></div>
+
+  <details id="settings">
+    <summary>ตั้งค่า Gemini API</summary>
+    <label>API key (เก็บในมือถือเครื่องนี้เท่านั้น)
+      <input id="gkey" type="password" placeholder="AIza..." autocomplete="off">
+    </label>
+    <label>ชื่อโมเดล
+      <input id="gmodel" type="text" value="gemini-2.5-flash">
+    </label>
+    <label>โหมดการอ่าน
+      <select id="mode">
+        <option value="auto">อัตโนมัติ (ออนไลน์ใช้ Gemini / ออฟไลน์ใช้ Tesseract)</option>
+        <option value="gemini">Gemini อย่างเดียว</option>
+        <option value="tess">Tesseract อย่างเดียว (ไม่ส่งภาพออกนอกเครื่อง)</option>
+      </select>
+    </label>
+    <button class="btn alt" id="saveKey" style="margin-top:12px">บันทึกและทดสอบคีย์</button>
+  </details>
 
   <button class="btn alt" id="prep">เตรียมใช้งานออฟไลน์ (ทำครั้งเดียวตอนมีเน็ต)</button>
 
@@ -56,7 +84,8 @@
   <div id="status">พร้อมใช้งาน ถ่ายหรือเลือกรูปได้เลย</div>
 
   <button class="btn green" id="makePdf" disabled>สร้าง PDF รวม (0 หน้า)</button>
-  <button class="btn alt" id="pdfText" disabled>PDF ข้อความล้วน (แก้ข้อความก่อนได้)</button>
+  <button class="btn green" id="makeXlsx" disabled>ส่งออก Excel (0 หน้า)</button>
+  <button class="btn alt" id="pdfText" disabled>PDF ข้อความล้วน (พิมพ์ผ่าน Chrome)</button>
   <button class="btn alt" id="clear" disabled>ล้างทั้งหมดเริ่มใหม่</button>
 
   <h3 style="margin:14px 0 6px">ข้อความทั้งหมด (แก้ไขได้)</h3>
@@ -69,56 +98,153 @@
 const $ = id => document.getElementById(id);
 const setStatus = m => $("status").textContent = m;
 
-let worker = null;
-let pages = [];
+const FONT_URL = "https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/sarabun/Sarabun-Regular.ttf";
+const PROMPT =
+  "อ่านข้อความทั้งหมดในภาพเอกสารนี้ให้ครบถ้วนและตรงตามต้นฉบับ ทั้งภาษาไทยและอังกฤษ " +
+  "ถ้าภาพหมุนหรือเอียงให้อ่านตามทิศทางที่ถูกต้อง รักษาการขึ้นบรรทัดใหม่ตามต้นฉบับ " +
+  "ห้ามแปล ห้ามสรุป ห้ามเพิ่มคำอธิบาย ห้ามใช้ markdown ตอบเฉพาะข้อความที่อ่านได้ " +
+  "ถ้าไม่มีข้อความเลยให้ตอบว่างเปล่า";
+
+let tessWorker = null;
+let pages = [];   // { id, blob, thumb, text, state }
 let queue = [];
 let busy = false;
 let nextId = 1;
 
+/* ---------- ตั้งค่า ---------- */
+$("gkey").value = localStorage.getItem("gkey") || "";
+$("gmodel").value = localStorage.getItem("gmodel") || "gemini-2.5-flash";
+$("mode").value = localStorage.getItem("mode") || "auto";
+if (!localStorage.getItem("gkey")) $("settings").open = true;
+
+$("saveKey").onclick = async () => {
+  localStorage.setItem("gkey", $("gkey").value.trim());
+  localStorage.setItem("gmodel", $("gmodel").value.trim() || "gemini-2.5-flash");
+  localStorage.setItem("mode", $("mode").value);
+  if (!navigator.onLine) return setStatus("บันทึกแล้ว (ออฟไลน์ จึงยังทดสอบคีย์ไม่ได้)");
+  setStatus("กำลังทดสอบคีย์...");
+  try {
+    const url = "https://generativelanguage.googleapis.com/v1beta/models/" +
+      encodeURIComponent($("gmodel").value.trim()) + ":generateContent";
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-goog-api-key": $("gkey").value.trim() },
+      body: JSON.stringify({ contents: [{ parts: [{ text: "ตอบคำว่า OK" }] }] })
+    });
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(j.error?.message || ("HTTP " + res.status));
+    setStatus("คีย์ใช้งานได้ พร้อมสแกน");
+    $("settings").open = false;
+  } catch (e) {
+    setStatus("ทดสอบไม่ผ่าน: " + e.message);
+  }
+};
+
 /* ---------- Service Worker + สถานะเน็ต ---------- */
-if ("serviceWorker" in navigator) {
-  navigator.serviceWorker.register("./sw.js").catch(() => {});
-}
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("./sw.js").catch(() => {});
 function updateNet() {
   const ready = localStorage.getItem("offlineReady") === "1";
   $("net").textContent =
     (navigator.onLine ? "สถานะ: ออนไลน์" : "สถานะ: ออฟไลน์") +
-    (ready ? " · พร้อมใช้งานออฟไลน์แล้ว" : " · ยังไม่ได้เตรียมออฟไลน์");
+    (ready ? " · พร้อมใช้ออฟไลน์แล้ว" : " · ยังไม่ได้เตรียมออฟไลน์");
   $("prep").style.display = ready ? "none" : "block";
 }
 window.addEventListener("online", updateNet);
 window.addEventListener("offline", updateNet);
 
-/* ---------- ภาพ ---------- */
-function prepareImage(file) {
+/* ---------- จัดการภาพ ---------- */
+function loadImg(blob) {
   return new Promise((resolve, reject) => {
-    const url = URL.createObjectURL(file);
+    const url = URL.createObjectURL(blob);
     const img = new Image();
-    img.onload = () => {
-      const MAX = 2200;
-      const s = Math.min(1, MAX / Math.max(img.width, img.height));
-      const c = document.createElement("canvas");
-      c.width = Math.round(img.width * s);
-      c.height = Math.round(img.height * s);
-      c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
-      URL.revokeObjectURL(url);
-      c.toBlob(b => b ? resolve(b) : reject(new Error("แปลงภาพไม่สำเร็จ")), "image/jpeg", 0.92);
-    };
+    img.onload = () => { URL.revokeObjectURL(url); resolve(img); };
     img.onerror = () => reject(new Error("เปิดรูปไม่ได้"));
     img.src = url;
   });
 }
+function canvasToBlob(c) {
+  return new Promise((res, rej) => c.toBlob(b => b ? res(b) : rej(new Error("แปลงภาพไม่สำเร็จ")), "image/jpeg", 0.85));
+}
+async function prepareImage(file, angle = 0) {
+  const img = await loadImg(file);
+  const MAX = 1800;
+  const s = Math.min(1, MAX / Math.max(img.width, img.height));
+  const w = Math.round(img.width * s), h = Math.round(img.height * s);
+  const swap = angle % 180 !== 0;
+  const c = document.createElement("canvas");
+  c.width = swap ? h : w;
+  c.height = swap ? w : h;
+  const ctx = c.getContext("2d");
+  ctx.fillStyle = "#fff";
+  ctx.fillRect(0, 0, c.width, c.height);
+  ctx.translate(c.width / 2, c.height / 2);
+  ctx.rotate(angle * Math.PI / 180);
+  ctx.drawImage(img, -w / 2, -h / 2, w, h);
+  return canvasToBlob(c);
+}
+function blobToB64(blob) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result).split(",")[1]);
+    r.onerror = () => reject(new Error("อ่านไฟล์ไม่ได้"));
+    r.readAsDataURL(blob);
+  });
+}
 
-/* ---------- OCR ---------- */
-async function getWorker() {
-  if (worker) return worker;
-  worker = await Tesseract.createWorker("tha+eng", 1, {
+/* ---------- OCR: Gemini ---------- */
+async function ocrGemini(blob) {
+  const key = (localStorage.getItem("gkey") || "").trim();
+  if (!key) throw new Error("ยังไม่ได้ใส่ API key");
+  const model = (localStorage.getItem("gmodel") || "gemini-2.5-flash").trim();
+  const data = await blobToB64(blob);
+  const url = "https://generativelanguage.googleapis.com/v1beta/models/" +
+    encodeURIComponent(model) + ":generateContent";
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-goog-api-key": key },
+    body: JSON.stringify({
+      contents: [{ parts: [{ text: PROMPT }, { inline_data: { mime_type: "image/jpeg", data } }] }],
+      generationConfig: { temperature: 0 }
+    })
+  });
+  const j = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(j.error?.message || ("HTTP " + res.status));
+  const parts = j.candidates?.[0]?.content?.parts || [];
+  return parts.map(p => p.text || "").join("").trim();
+}
+
+/* ---------- OCR: Tesseract (สำรอง/ออฟไลน์) ---------- */
+async function getTess() {
+  if (typeof Tesseract === "undefined") throw new Error("ยังไม่มีไลบรารี Tesseract (ต้องต่อเน็ตและเตรียมออฟไลน์ก่อน)");
+  if (tessWorker) return tessWorker;
+  tessWorker = await Tesseract.createWorker("tha+eng", 1, {
     logger: m => {
       if (m.status === "recognizing text") $("bar").value = m.progress;
-      else setStatus("เตรียมระบบ: " + m.status);
+      else setStatus("เตรียมระบบ Tesseract: " + m.status);
     }
   });
-  return worker;
+  return tessWorker;
+}
+async function ocrTess(blob) {
+  const w = await getTess();
+  const { data } = await w.recognize(blob);
+  return (data.text || "").replace(/(?<=[\u0E00-\u0E7F])[ \t]+(?=[\u0E00-\u0E7F])/g, "").trim();
+}
+
+/* ---------- ตัวเลือกวิธีอ่าน ---------- */
+async function readPage(blob) {
+  const mode = localStorage.getItem("mode") || "auto";
+  const hasKey = !!(localStorage.getItem("gkey") || "").trim();
+  if (mode === "tess") return { text: await ocrTess(blob), by: "Tesseract" };
+  if (mode === "gemini") return { text: await ocrGemini(blob), by: "Gemini" };
+  if (navigator.onLine && hasKey) {
+    try { return { text: await ocrGemini(blob), by: "Gemini" }; }
+    catch (e) {
+      setStatus("Gemini ใช้ไม่ได้ (" + e.message + ") ใช้ Tesseract แทน");
+      return { text: await ocrTess(blob), by: "Tesseract" };
+    }
+  }
+  return { text: await ocrTess(blob), by: "Tesseract" };
 }
 
 /* ---------- เตรียมออฟไลน์ ---------- */
@@ -128,15 +254,14 @@ $("prep").onclick = async () => {
   $("bar").hidden = false;
   try {
     setStatus("กำลังดาวน์โหลดไฟล์ที่จำเป็น รอสักครู่...");
-    const w = await getWorker();
+    await fetch(FONT_URL);
     const c = document.createElement("canvas");
     c.width = 400; c.height = 120;
     const ctx = c.getContext("2d");
     ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, 400, 120);
     ctx.fillStyle = "#000"; ctx.font = "40px sans-serif";
     ctx.fillText("Test ทดสอบ", 20, 70);
-    const blob = await new Promise(r => c.toBlob(r, "image/png"));
-    await w.recognize(blob, {}, { pdf: true });
+    await ocrTess(await canvasToBlob(c));
     localStorage.setItem("offlineReady", "1");
     setStatus("เตรียมเสร็จแล้ว ใช้งานโดยไม่ต้องมีเน็ตได้");
   } catch (e) {
@@ -148,10 +273,10 @@ $("prep").onclick = async () => {
   }
 };
 
-/* ---------- คิวประมวลผล ---------- */
+/* ---------- คิว ---------- */
 function addFiles(files) {
   for (const f of files) {
-    const page = { id: nextId++, thumb: URL.createObjectURL(f), text: "", pdf: null, state: "รอคิว" };
+    const page = { id: nextId++, blob: null, thumb: "", text: "", state: "เตรียมภาพ" };
     pages.push(page);
     queue.push({ file: f, page });
   }
@@ -162,26 +287,24 @@ function addFiles(files) {
 async function runQueue() {
   if (busy) return;
   busy = true;
+  render();
   $("bar").hidden = false;
   while (queue.length) {
     const { file, page } = queue.shift();
     if (!pages.includes(page)) continue;
     try {
+      page.blob = await prepareImage(file, 0);
+      page.thumb = URL.createObjectURL(page.blob);
       page.state = "กำลังอ่าน...";
       render();
       setStatus("กำลังอ่านหน้า " + (pages.indexOf(page) + 1) + " (เหลือในคิว " + queue.length + ")");
-      $("bar").value = 0;
-      const blob = await prepareImage(file);
-      const w = await getWorker();
-      const { data } = await w.recognize(blob, { pdfTitle: "scan" }, { pdf: true });
-      page.text = (data.text || "")
-        .replace(/(?<=[\u0E00-\u0E7F])[ \t]+(?=[\u0E00-\u0E7F])/g, "")
-        .trim();
-      page.pdf = new Uint8Array(data.pdf);
-      page.state = "เสร็จ";
+      $("bar").removeAttribute("value");
+      const r = await readPage(page.blob);
+      page.text = r.text;
+      page.state = "เสร็จ · " + r.by;
     } catch (e) {
       page.state = "ผิดพลาด";
-      setStatus("เกิดข้อผิดพลาด: " + e.message + " (ถ้ายังไม่เคยเตรียมออฟไลน์ ให้ต่อเน็ตก่อน)");
+      setStatus("เกิดข้อผิดพลาด: " + e.message);
     }
     rebuildText();
     render();
@@ -189,80 +312,129 @@ async function runQueue() {
   $("bar").hidden = true;
   busy = false;
   render();
-  setStatus("อ่านเสร็จแล้ว เพิ่มหน้าได้อีก หรือกด \"สร้าง PDF รวม\"");
+  setStatus("อ่านเสร็จแล้ว เพิ่มหน้าได้อีก หรือกดสร้าง PDF / ส่งออก Excel");
 }
 
 /* ---------- แสดงผล ---------- */
+const isReady = p => p.state.startsWith("เสร็จ");
 function render() {
   const box = $("pages");
   box.innerHTML = "";
   pages.forEach((p, i) => {
     const d = document.createElement("div");
     d.className = "page";
-    d.innerHTML = '<img src="' + p.thumb + '" alt=""><div class="st">หน้า ' + (i + 1) + " · " + p.state + "</div>";
+    d.innerHTML = (p.thumb ? '<img src="' + p.thumb + '" alt="">' : '<div style="height:110px"></div>') +
+      '<div class="st">หน้า ' + (i + 1) + " · " + p.state + "</div>";
     const del = document.createElement("button");
-    del.className = "del";
-    del.textContent = "×";
-    del.onclick = () => removePage(p.id);
+    del.className = "del"; del.textContent = "×";
+    del.onclick = () => { pages = pages.filter(x => x.id !== p.id); rebuildText(); render(); };
     d.appendChild(del);
+    if (p.blob) {
+      const rot = document.createElement("button");
+      rot.className = "rot"; rot.textContent = "↻";
+      rot.onclick = async () => {   // หมุนภาพใน PDF 90° (ไม่อ่านข้อความใหม่)
+        p.blob = await prepareImage(p.blob, 90);
+        p.thumb = URL.createObjectURL(p.blob);
+        render();
+      };
+      d.appendChild(rot);
+    }
     box.appendChild(d);
   });
-  const ready = pages.filter(p => p.pdf).length;
+  const ready = pages.filter(isReady).length;
   $("makePdf").textContent = "สร้าง PDF รวม (" + ready + " หน้า)";
   $("makePdf").disabled = ready === 0 || busy;
+  $("makeXlsx").textContent = "ส่งออก Excel (" + ready + " หน้า)";
+  $("makeXlsx").disabled = ready === 0;
   $("pdfText").disabled = ready === 0;
   $("clear").disabled = pages.length === 0;
 }
 
-function removePage(id) {
-  pages = pages.filter(p => p.id !== id);
-  rebuildText();
-  render();
-}
-
 function rebuildText() {
-  const done = pages.filter(p => p.pdf);
+  const done = pages.filter(isReady);
   $("out").value = done.map((p, i) =>
-    (done.length > 1 ? "--- หน้า " + (i + 1) + " ---\n" : "") + p.text
-  ).join("\n\n");
+    (done.length > 1 ? "--- หน้า " + (i + 1) + " ---\n" : "") + p.text).join("\n\n");
 }
 
-/* ---------- รวม PDF ---------- */
+/* ---------- ส่งไฟล์ (แชร์ หรือ ดาวน์โหลด) ---------- */
+async function deliver(blob, name, mime, label) {
+  const file = new File([blob], name, { type: mime });
+  if (navigator.canShare && navigator.canShare({ files: [file] })) {
+    try { await navigator.share({ files: [file], title: name }); return "แชร์ " + label + " แล้ว"; }
+    catch (e) { if (e.name === "AbortError") return "ยกเลิกการแชร์"; }
+  }
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob); a.download = name; a.click();
+  return "ดาวน์โหลด " + label + " แล้ว ดูในโฟลเดอร์ Downloads";
+}
+const stamp = () => new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+
+/* ---------- รวม PDF (ภาพ + ชั้นข้อความที่มองไม่เห็น) ---------- */
 async function makeMergedPdf() {
-  const ready = pages.filter(p => p.pdf);
+  const ready = pages.filter(isReady);
   if (!ready.length) return setStatus("ยังไม่มีหน้าที่อ่านเสร็จ");
   $("makePdf").disabled = true;
-  setStatus("กำลังรวม PDF...");
+  setStatus("กำลังสร้าง PDF...");
+  let textFail = 0;
   try {
-    const merged = await PDFLib.PDFDocument.create();
-    for (const p of ready) {
-      const src = await PDFLib.PDFDocument.load(p.pdf);
-      const copied = await merged.copyPages(src, src.getPageIndices());
-      copied.forEach(pg => merged.addPage(pg));
-    }
-    const bytes = await merged.save();
-    const blob = new Blob([bytes], { type: "application/pdf" });
-    const name = "scan-" + new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-") + ".pdf";
-    const file = new File([blob], name, { type: "application/pdf" });
+    const doc = await PDFLib.PDFDocument.create();
+    let font = null;
+    try {
+      doc.registerFontkit(fontkit);
+      const fb = await (await fetch(FONT_URL)).arrayBuffer();
+      font = await doc.embedFont(fb, { subset: true });
+    } catch (e) { font = null; }
 
-    if (navigator.canShare && navigator.canShare({ files: [file] })) {
-      try {
-        await navigator.share({ files: [file], title: name });
-        setStatus("แชร์ PDF แล้ว (" + ready.length + " หน้า)");
-        return;
-      } catch (e) {
-        if (e.name === "AbortError") { setStatus("ยกเลิกการแชร์"); return; }
+    for (const p of ready) {
+      const jpg = await doc.embedJpg(await p.blob.arrayBuffer());
+      const W = 595, H = Math.round(jpg.height * W / jpg.width);
+      const pg = doc.addPage([W, H]);
+      pg.drawImage(jpg, { x: 0, y: 0, width: W, height: H });
+      if (font && p.text) {
+        try {
+          const lines = p.text.split("\n").length;
+          const size = Math.max(4, Math.min(12, (H - 20) / (lines * 1.3)));
+          pg.drawText(p.text, { x: 10, y: H - 10 - size, size, font,
+            lineHeight: size * 1.3, opacity: 0 });
+        } catch (e) { textFail++; }
       }
     }
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = name;
-    a.click();
-    setStatus("ดาวน์โหลด PDF แล้ว (" + ready.length + " หน้า) ดูในโฟลเดอร์ Downloads");
+    const bytes = await doc.save();
+    const note = (!font ? " (ไม่มีชั้นข้อความ: โหลดฟอนต์ไม่ได้)" : textFail ? " (" + textFail + " หน้าไม่มีชั้นข้อความ)" : "");
+    const msg = await deliver(new Blob([bytes], { type: "application/pdf" }),
+      "scan-" + stamp() + ".pdf", "application/pdf", "PDF");
+    setStatus(msg + note);
   } catch (e) {
-    setStatus("รวม PDF ไม่สำเร็จ: " + e.message);
-  } finally {
-    render();
+    setStatus("สร้าง PDF ไม่สำเร็จ: " + e.message);
+  } finally { render(); }
+}
+
+/* ---------- ส่งออก Excel ---------- */
+async function makeExcel() {
+  const ready = pages.filter(isReady);
+  if (!ready.length) return setStatus("ยังไม่มีหน้าที่อ่านเสร็จ");
+  if (typeof XLSX === "undefined") return setStatus("ยังไม่มีไลบรารี Excel (ต้องต่อเน็ตเปิดแอปก่อน 1 ครั้ง)");
+  try {
+    const rows1 = [["หน้า", "ข้อความ"]];
+    const rows2 = [["หน้า", "บรรทัด", "ข้อความ"]];
+    ready.forEach((p, i) => {
+      rows1.push([i + 1, p.text]);
+      p.text.split("\n").map(s => s.trim()).filter(Boolean)
+        .forEach((line, j) => rows2.push([i + 1, j + 1, line]));
+    });
+    const ws1 = XLSX.utils.aoa_to_sheet(rows1);
+    ws1["!cols"] = [{ wch: 6 }, { wch: 90 }];
+    const ws2 = XLSX.utils.aoa_to_sheet(rows2);
+    ws2["!cols"] = [{ wch: 6 }, { wch: 8 }, { wch: 80 }];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws1, "ข้อความรายหน้า");
+    XLSX.utils.book_append_sheet(wb, ws2, "แยกรายบรรทัด");
+
+    const bytes = XLSX.write(wb, { bookType: "xlsx", type: "array" });
+    const mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+    setStatus(await deliver(new Blob([bytes], { type: mime }), "scan-" + stamp() + ".xlsx", mime, "Excel"));
+  } catch (e) {
+    setStatus("ส่งออก Excel ไม่สำเร็จ: " + e.message);
   }
 }
 
@@ -270,23 +442,17 @@ async function makeMergedPdf() {
 $("cam").addEventListener("change", e => { addFiles([...e.target.files]); e.target.value = ""; });
 $("gal").addEventListener("change", e => { addFiles([...e.target.files]); e.target.value = ""; });
 $("makePdf").onclick = makeMergedPdf;
-
+$("makeXlsx").onclick = makeExcel;
 $("pdfText").onclick = () => {
   const t = $("out").value;
   if (!t) return setStatus("ยังไม่มีข้อความ");
   $("printArea").textContent = t;
   window.print();
 };
-
 $("clear").onclick = () => {
   if (!confirm("ล้างทุกหน้า?")) return;
-  queue = [];
-  pages = [];
-  $("out").value = "";
-  render();
-  setStatus("ล้างแล้ว");
+  queue = []; pages = []; $("out").value = ""; render(); setStatus("ล้างแล้ว");
 };
-
 $("copy").onclick = async () => {
   try { await navigator.clipboard.writeText($("out").value); setStatus("คัดลอกแล้ว"); }
   catch { $("out").select(); document.execCommand("copy"); setStatus("คัดลอกแล้ว"); }
