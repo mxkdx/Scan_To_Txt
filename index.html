@@ -58,7 +58,7 @@
       <input id="gkey" type="password" placeholder="AIza..." autocomplete="off">
     </label>
     <label>ชื่อโมเดล
-      <input id="gmodel" type="text" value="gemini-2.5-flash">
+      <input id="gmodel" type="text" value="gemini-3.8-flash">
     </label>
     <label>โหมดการอ่าน
       <select id="mode">
@@ -113,13 +113,13 @@ let nextId = 1;
 
 /* ---------- ตั้งค่า ---------- */
 $("gkey").value = localStorage.getItem("gkey") || "";
-$("gmodel").value = localStorage.getItem("gmodel") || "gemini-2.5-flash";
+$("gmodel").value = localStorage.getItem("gmodel") || "gemini-3.8-flash";
 $("mode").value = localStorage.getItem("mode") || "auto";
 if (!localStorage.getItem("gkey")) $("settings").open = true;
 
 $("saveKey").onclick = async () => {
   localStorage.setItem("gkey", $("gkey").value.trim());
-  localStorage.setItem("gmodel", $("gmodel").value.trim() || "gemini-2.5-flash");
+  localStorage.setItem("gmodel", $("gmodel").value.trim() || "gemini-3.8-flash");
   localStorage.setItem("mode", $("mode").value);
   if (!navigator.onLine) return setStatus("บันทึกแล้ว (ออฟไลน์ จึงยังทดสอบคีย์ไม่ได้)");
   setStatus("กำลังทดสอบคีย์...");
@@ -195,7 +195,7 @@ function blobToB64(blob) {
 async function ocrGemini(blob) {
   const key = (localStorage.getItem("gkey") || "").trim();
   if (!key) throw new Error("ยังไม่ได้ใส่ API key");
-  const model = (localStorage.getItem("gmodel") || "gemini-2.5-flash").trim();
+  const model = (localStorage.getItem("gmodel") || "gemini-3.8-flash").trim();
   const data = await blobToB64(blob);
   const url = "https://generativelanguage.googleapis.com/v1beta/models/" +
     encodeURIComponent(model) + ":generateContent";
